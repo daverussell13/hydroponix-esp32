@@ -1,5 +1,6 @@
 #include <WiFi.h>
 #include <WiFiManager.h>
+#include <ArduinoJson.h>
 #include <PubSubClient.h>
 #include "secrets.h"
 
@@ -10,19 +11,24 @@ PubSubClient mqttClient(espClient);
 
 const char* DEVICE_ID = SECRET_DEVICE_ID;
 
-const char* WIFI_SSID = "Hydroponix Device";
-const char* WIFI_PASSWORD = "password";
+const char* AP_SSID = "Hydroponix Device";
+const char* AP_PASSWORD = SECRET_AP_PASSWORD;
 bool isWiFiConnected = false;
 
 const char* MQTT_HOST = "test.mosquitto.org";
-const char* MQTT_USERNAME = "";
-const char* MQTT_PASSWORD = "";
 const int MQTT_PORT = 1883;
+const char* MQTT_USERNAME = SECRET_MQTT_USERNAME;
+const char* MQTT_PASSWORD = SECRET_MQTT_PASSWORD;
+
+// MQTT Topics
+const char* SENSOR_TOPIC = "hydroponix/sensor";
+const char* PUMP_TOPIC = "hydroponix/pump";
 
 // Functions
 void monitorWiFiConnection(void*);
 void connectToMqttBroker(void*);
 void mqttCallback(char*, byte*, unsigned int);
+void mqttPumpHandler(String);
 
 void setup() 
 {
@@ -33,7 +39,7 @@ void setup()
   wifiManager.setDarkMode(true);
   wifiManager.setWiFiAutoReconnect(true);
 
-  if(!wifiManager.autoConnect(WIFI_SSID, WIFI_PASSWORD)) 
+  if(!wifiManager.autoConnect(AP_SSID, AP_PASSWORD)) 
   {
     Serial.println("Failed to connect");
   }
@@ -51,18 +57,29 @@ void setup()
 
 void loop() 
 {
+  StaticJsonDocument<200> sensorJDoc;
+  sensorJDoc["ph"] = 7;
+  sensorJDoc["temp"] = 30;
+  sensorJDoc["tds"] = 130;
+
+  String sensorJSON;
+  serializeJson(sensorJDoc, sensorJSON);
+
+  mqttClient.publish(SENSOR_TOPIC, sensorJSON.c_str());
+  delay(5000);
 }
 
-void mqttCallback(char* topic, byte* payload, unsigned int length) {
+void mqttCallback(char* topic, byte* payload, unsigned int length) 
+{
+  String msgBuff;
   Serial.print("Message arrived in topic: ");
   Serial.println(topic);
-  Serial.print("Message:");
-  for(int i = 0; i < length; i++) 
-  {
-    Serial.print((char) payload[i]);
+
+  for (int i = 0; i < length; i++) {
+    msgBuff += (char) payload[i];
   }
-  Serial.println();
-  Serial.println("-----------------------");
+
+  if (!strcmp(topic, PUMP_TOPIC)) mqttPumpHandler(msgBuff);
 }
 
 void monitorWiFiConnection(void* params)
@@ -79,7 +96,7 @@ void monitorWiFiConnection(void* params)
     {
       digitalWrite(LED_BUILTIN, LOW);
       isWiFiConnected = false;
-      wifiManager.startConfigPortal(WIFI_SSID, WIFI_PASSWORD);
+      wifiManager.startConfigPortal(AP_SSID, AP_PASSWORD);
     }
     vTaskDelay(250 / portTICK_PERIOD_MS);
   }
@@ -100,6 +117,7 @@ void connectToMqttBroker(void* params)
       if(mqttClient.connect(DEVICE_ID, MQTT_USERNAME, MQTT_PASSWORD))
       {
         Serial.println("Connected to MQTT broker");
+        mqttClient.subscribe(PUMP_TOPIC);
       }
       else
       {
@@ -110,4 +128,10 @@ void connectToMqttBroker(void* params)
     }
     vTaskDelay(delay_ms / portTICK_PERIOD_MS);
   }
+}
+
+void mqttPumpHandler(String msg)
+{
+  // Triggering pump
+  Serial.println(msg);
 }
