@@ -1,13 +1,21 @@
+#include <esp_now.h>
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
 #include "secrets.h"
 
+typedef struct {
+  float ph;
+  float tds;
+  float temp;
+} Sensor;
+
 // Globals
 WiFiManager wifiManager;
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
+Sensor sensorData;
 
 const char* DEVICE_ID = SECRET_DEVICE_ID;
 
@@ -29,12 +37,22 @@ void monitorWiFiConnection(void*);
 void connectToMqttBroker(void*);
 void mqttCallback(char*, byte*, unsigned int);
 void mqttPumpHandler(String);
+void espNowRecvCallback(const uint8_t*, const uint8_t*, int);
+void publishSensorData(Sensor);
 
 void setup() 
 {
   Serial.begin(115200);
   WiFi.mode(WIFI_STA);
   pinMode(LED_BUILTIN, OUTPUT);
+
+  if(esp_now_init() != ESP_OK)
+  {
+    Serial.println("Error initializing ESP-NOW");
+    return;
+  }
+
+  esp_now_register_recv_cb(espNowRecvCallback);
 
   wifiManager.setDarkMode(true);
   wifiManager.setWiFiAutoReconnect(true);
@@ -52,21 +70,28 @@ void setup()
   mqttClient.setCallback(mqttCallback);
 
   xTaskCreatePinnedToCore(monitorWiFiConnection, "Monitor WiFi Connection", 1024, NULL, 2, NULL, CONFIG_ARDUINO_RUNNING_CORE);
-  xTaskCreate(connectToMqttBroker, "Connect to MQTT Broker", 1024 * 2, NULL, 1, NULL);
 }
 
 void loop() 
 {
-  StaticJsonDocument<200> sensorJDoc;
-  sensorJDoc["ph"] = 7;
-  sensorJDoc["temp"] = 30;
-  sensorJDoc["tds"] = 130;
-
-  String sensorJSON;
-  serializeJson(sensorJDoc, sensorJSON);
-
-  mqttClient.publish(SENSOR_TOPIC, sensorJSON.c_str());
-  delay(5000);
+  if(isWiFiConnected && mqttClient.connected())
+  {
+    mqttClient.loop();        
+  }
+  else if(isWiFiConnected && !mqttClient.connected())
+  {
+    Serial.println("Attempting to connect MQTT broker");
+    if(mqttClient.connect(DEVICE_ID, MQTT_USERNAME, MQTT_PASSWORD))
+    {
+      Serial.println("Connected to MQTT broker");
+      mqttClient.subscribe(PUMP_TOPIC);
+    }
+    else
+    {
+      Serial.println("Failed connecting to MQTT broker");
+    }
+  }
+  delay(1000);
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) 
@@ -102,36 +127,39 @@ void monitorWiFiConnection(void* params)
   }
 }
 
-void connectToMqttBroker(void* params)
-{
-  while(true)
-  {
-    int delay_ms = 500;
-    if(isWiFiConnected && mqttClient.connected())
-    {
-      mqttClient.loop();        
-    }
-    else if(isWiFiConnected)
-    {
-      Serial.println("Attempting to connect MQTT broker");
-      if(mqttClient.connect(DEVICE_ID, MQTT_USERNAME, MQTT_PASSWORD))
-      {
-        Serial.println("Connected to MQTT broker");
-        mqttClient.subscribe(PUMP_TOPIC);
-      }
-      else
-      {
-        Serial.println("Failed connecting to MQTT broker");
-        Serial.println("Retry in 5 seconds");
-        delay_ms = 5000;
-      }
-    }
-    vTaskDelay(delay_ms / portTICK_PERIOD_MS);
-  }
-}
-
 void mqttPumpHandler(String msg)
 {
   // Triggering pump
   Serial.println(msg);
+}
+
+void espNowRecvCallback(const uint8_t* mac, const uint8_t* data, int len)
+{
+  memcpy(&sensorData, data, sizeof(sensorData));
+  Serial.print("Data received : ");
+  Serial.println(len);
+  Serial.print("PH : ");
+  Serial.println(sensorData.ph);
+  Serial.print("TDS : ");
+  Serial.println(sensorData.tds);
+  Serial.print("TEMP : ");
+  Serial.println(sensorData.temp);
+  publishSensorData(sensorData);
+}
+
+void publishSensorData(Sensor sensorData) 
+{
+  if(mqttClient.connected())
+  {
+    StaticJsonDocument<200> sensorJDoc;
+
+    sensorJDoc["ph"] = sensorData.ph;
+    sensorJDoc["tds"] = sensorData.tds;
+    sensorJDoc["temp"] = sensorData.temp;
+
+    String sensorJSON;
+    serializeJson(sensorJDoc, sensorJSON);
+    
+    mqttClient.publish(SENSOR_TOPIC, sensorJSON.c_str());
+  }
 }
