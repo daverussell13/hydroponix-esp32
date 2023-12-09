@@ -153,9 +153,3 @@ void publishSensorData(String jsonFormattedSensorData)
     mqttClient.publish(SENSOR_TOPIC, jsonFormattedSensorData.c_str());
   }
 }
-
-bool isValidJson(const String& data) {
-  DynamicJsonDocument tempDoc(200);
-  DeserializationError error = deserializeJson(tempDoc, data);
-  return (error == DeserializationError::Ok);
-}
