@@ -1,21 +1,15 @@
-#include <esp_now.h>
 #include <WiFi.h>
 #include <WiFiManager.h>
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
+#include <SoftwareSerial.h>
 #include "secrets.h"
-
-typedef struct {
-  float ph;
-  float tds;
-  float temp;
-} Sensor;
 
 // Globals
 WiFiManager wifiManager;
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
-Sensor sensorData;
+SoftwareSerial ArduinoSerialCom(35, 34);
 
 const char* DEVICE_ID = SECRET_DEVICE_ID;
 
@@ -38,21 +32,15 @@ void connectToMqttBroker(void*);
 void mqttCallback(char*, byte*, unsigned int);
 void mqttPumpHandler(String);
 void espNowRecvCallback(const uint8_t*, const uint8_t*, int);
-void publishSensorData(Sensor);
+void publishSensorData(String);
 
 void setup() 
 {
   Serial.begin(115200);
+  ArduinoSerialCom.begin(9600);
+
   WiFi.mode(WIFI_STA);
   pinMode(LED_BUILTIN, OUTPUT);
-
-  if(esp_now_init() != ESP_OK)
-  {
-    Serial.println("Error initializing ESP-NOW");
-    return;
-  }
-
-  esp_now_register_recv_cb(espNowRecvCallback);
 
   wifiManager.setDarkMode(true);
   wifiManager.setWiFiAutoReconnect(true);
@@ -70,28 +58,28 @@ void setup()
   mqttClient.setCallback(mqttCallback);
 
   xTaskCreatePinnedToCore(monitorWiFiConnection, "Monitor WiFi Connection", 1024, NULL, 2, NULL, CONFIG_ARDUINO_RUNNING_CORE);
+  xTaskCreate(connectToMqttBroker, "Connect to MQTT Broker", 1024 * 2, NULL, 2, NULL);
 }
 
 void loop() 
 {
-  if(isWiFiConnected && mqttClient.connected())
+  if (ArduinoSerialCom.available() > 0) 
   {
-    mqttClient.loop();        
-  }
-  else if(isWiFiConnected && !mqttClient.connected())
-  {
-    Serial.println("Attempting to connect MQTT broker");
-    if(mqttClient.connect(DEVICE_ID, MQTT_USERNAME, MQTT_PASSWORD))
+    String sensorData = ArduinoSerialCom.readString();
+
+    DynamicJsonDocument doc(200);
+    DeserializationError error = deserializeJson(doc, sensorData);
+
+    if (error == DeserializationError::Ok) 
     {
-      Serial.println("Connected to MQTT broker");
-      mqttClient.subscribe(PUMP_TOPIC);
-    }
-    else
-    {
-      Serial.println("Failed connecting to MQTT broker");
+      if (doc.containsKey("ph") && doc.containsKey("tds") && doc.containsKey("temp") &&
+          doc["ph"].is<float>() && doc["tds"].is<float>() && doc["temp"].is<float>()) 
+      {
+        Serial.print(sensorData);
+        publishSensorData(sensorData);
+      }
     }
   }
-  delay(1000);
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) 
@@ -121,9 +109,34 @@ void monitorWiFiConnection(void* params)
     {
       digitalWrite(LED_BUILTIN, LOW);
       isWiFiConnected = false;
-      wifiManager.startConfigPortal(AP_SSID, AP_PASSWORD);
+      if(!wifiManager.getConfigPortalActive()) wifiManager.startConfigPortal(AP_SSID, AP_PASSWORD);
     }
     vTaskDelay(250 / portTICK_PERIOD_MS);
+  }
+}
+
+void connectToMqttBroker(void* params)
+{
+  while(true)
+  {
+    if(isWiFiConnected && mqttClient.connected())
+    {
+      mqttClient.loop();
+    }
+    else if(isWiFiConnected)
+    {
+       Serial.println("Attempting to connect MQTT broker");
+      if(mqttClient.connect(DEVICE_ID, MQTT_USERNAME, MQTT_PASSWORD))
+      {
+        Serial.println("Connected to MQTT broker");
+        mqttClient.subscribe(PUMP_TOPIC);
+      }
+      else
+      {
+        Serial.println("Failed connecting to MQTT broker");
+      }
+    }
+    vTaskDelay(500 / portTICK_PERIOD_MS);
   }
 }
 
@@ -133,33 +146,16 @@ void mqttPumpHandler(String msg)
   Serial.println(msg);
 }
 
-void espNowRecvCallback(const uint8_t* mac, const uint8_t* data, int len)
-{
-  memcpy(&sensorData, data, sizeof(sensorData));
-  Serial.print("Data received : ");
-  Serial.println(len);
-  Serial.print("PH : ");
-  Serial.println(sensorData.ph);
-  Serial.print("TDS : ");
-  Serial.println(sensorData.tds);
-  Serial.print("TEMP : ");
-  Serial.println(sensorData.temp);
-  publishSensorData(sensorData);
-}
-
-void publishSensorData(Sensor sensorData) 
+void publishSensorData(String jsonFormattedSensorData) 
 {
   if(mqttClient.connected())
-  {
-    StaticJsonDocument<200> sensorJDoc;
-
-    sensorJDoc["ph"] = sensorData.ph;
-    sensorJDoc["tds"] = sensorData.tds;
-    sensorJDoc["temp"] = sensorData.temp;
-
-    String sensorJSON;
-    serializeJson(sensorJDoc, sensorJSON);
-    
-    mqttClient.publish(SENSOR_TOPIC, sensorJSON.c_str());
+  {    
+    mqttClient.publish(SENSOR_TOPIC, jsonFormattedSensorData.c_str());
   }
+}
+
+bool isValidJson(const String& data) {
+  DynamicJsonDocument tempDoc(200);
+  DeserializationError error = deserializeJson(tempDoc, data);
+  return (error == DeserializationError::Ok);
 }
