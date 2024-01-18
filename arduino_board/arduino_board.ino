@@ -4,10 +4,17 @@
 SoftwareSerial ArduinoSerialCom(2, 3);
 
 // Pump relay
-const int tdsBufferRelay = 7;
-const unsigned long tdsRelayDuration = 2000; // 2 seconds
+const int tdsBufferRelay = 6;
+bool isPumpActive = false;
 
-void setup() {
+const unsigned long tdsRelayDuration = 2000; // 2 seconds
+const unsigned long ledDuration = 2000; // 2 seconds
+
+unsigned long lastTdsTime = 0;
+unsigned long lastLedTime = 0;
+
+void setup()
+{
   Serial.begin(9600);
   ArduinoSerialCom.begin(9600);
   pinMode(tdsBufferRelay, OUTPUT);
@@ -29,9 +36,13 @@ void loop() {
         if (doc["trigger"] == "tds") 
         {
           digitalWrite(tdsBufferRelay, LOW);
-          digitalWrite(LED_BUILTIN, HIGH);
-          delay(2000);
+          delay(tdsRelayDuration);
           digitalWrite(tdsBufferRelay, HIGH);
+        }
+        else if (doc["trigger"] == "led")
+        {
+          digitalWrite(LED_BUILTIN, HIGH);
+          delay(ledDuration);
           digitalWrite(LED_BUILTIN, LOW);
         }
       }

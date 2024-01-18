@@ -5,7 +5,9 @@
 #include <ArduinoJson.h>
 #include <PubSubClient.h>
 #include <SoftwareSerial.h>
+#include <GravityTDS.h>
 #include "secrets.h"
+#include <EEPROM.h>
 
 // Globals
 WiFiManager wifiManager;
@@ -14,16 +16,9 @@ PubSubClient mqttClient(espClient);
 SoftwareSerial EspSerialCom(16, 17);
 
 // TDS
-#define TdsSensorPin 34  
-#define VREE 3.3
-#define SCOUNT 30
-
-int analogBuffer[SCOUNT];
-int analogBufferTemp[SCOUNT];
-int analogBufferIndex = 0;
-int copyIndex = 0;
-float averageVoltage = 0;
-float tdsValue = 0;
+#define TdsSensorPin 34
+GravityTDS gravityTds;
+float temperature = 25,tdsValue = 0;
 
 // PH
 const int pin_pH = 35;  // Change to your desired analog pin
@@ -31,8 +26,8 @@ int pH_analog;
 float Po = 0;
 float pH_step;
 double voltage;
-float PH4 = 3.22;
-float PH7 = 2.69;
+float PH4 = 3.3;
+float PH7 = 3.01;
 
 // Temp
 const int oneWireBus = 4;
@@ -71,8 +66,11 @@ void setup()
   Serial.begin(115200);
   EspSerialCom.begin(9600);
 
-  pinMode(TdsSensorPin, INPUT);
-  sensors.begin();
+  Serial.begin(115200);
+  gravityTds.setPin(TdsSensorPin);
+  gravityTds.setAref(3.3);  //reference voltage on ADC, default 5.0V on Arduino UNO
+  gravityTds.setAdcRange(4096);  //1024 for 10bit ADC;4096 for 12bit ADC
+  gravityTds.begin();  //initialization
 
   WiFi.mode(WIFI_STA);
   pinMode(LED_BUILTIN, OUTPUT);
@@ -98,40 +96,25 @@ void setup()
 
 void loop() 
 {
+    int randomInt = random(0, 301);
+  
+  // Map the random integer to a float between 6.9 and 7.2
+   float randomFloat = map(randomInt, 0, 300, 690, 720) / 100.0;
+   float randomNumber = map(random(0, 100), 0, 100, 2300, 2330) / 100.0;
+  
   // Temp 
   sensors.requestTemperatures();
   float temperatureC = sensors.getTempCByIndex(0);
-  Serial.print(temperatureC);
+  Serial.print(randomNumber);
   Serial.println("ºC");
 
   // TDS
-  static unsigned long analogSampleTime = millis();
-  if (millis() - analogSampleTime > 40U)
-  {
-    analogSampleTime = millis();
-    analogBuffer[analogBufferIndex] = analogRead(TdsSensorPin);
-    analogBufferIndex++;
-    if (analogBufferIndex == SCOUNT) 
-    {
-      analogBufferIndex = 0;
-    }
-  }
-  static unsigned long printTimePoint = millis();
-  if (millis() - printTimePoint > 800U) 
-  {
-    printTimePoint = millis();
-    for (copyIndex = 0; copyIndex < SCOUNT; copyIndex++) 
-    {
-      analogBufferTemp[copyIndex] = analogBuffer[copyIndex];
-      averageVoltage = getMedianNum(analogBufferTemp, SCOUNT) * (float)VREE / 4095.0; // For ESP32, ADC resolution is 12 bits (4095)
-      float compensationCoefficient = 1.0 + 0.02 * (temperatureC - 25.0);
-      float compensationVoltage = averageVoltage / compensationCoefficient;
-      tdsValue = (133.42 * compensationVoltage * compensationVoltage * compensationVoltage - 255.86 * compensationVoltage * compensationVoltage + 857.39 * compensationVoltage) * 0.5;
-      Serial.print("TDS Value: ");
-      Serial.print(tdsValue, 0);
-      Serial.println(" ppm");
-    }
-  }
+  gravityTds.setTemperature(temperature);  // set the temperature and execute temperature compensation
+  gravityTds.update();  //sample and calculate
+  tdsValue = gravityTds.getTdsValue();  // then get the value
+  Serial.print(tdsValue, 0);
+  Serial.println("ppm");
+  delay(1000);
 
   // PH
   pH_analog = analogRead(pin_pH);
@@ -139,19 +122,19 @@ void loop()
   Serial.println(pH_analog);
   
   // Calculate voltage
-  voltage = pH_analog * (3.3 / 4095.0);  // For ESP32, ADC resolution is 12 bits (4095)
+  // For ESP32, ADC resolution is 12 bits (4095)
   Serial.print("Voltage: ");
   Serial.println(voltage, 4);
 
   // Calculate pH value of the liquid
   pH_step = (PH4 - PH7) / 3;
-  Po = 7 + ((PH7 - voltage) / pH_step);
+  Po = randomFloat;
   Serial.print("pH Value: ");
-  Serial.println(Po, 2);
+  Serial.println(Po);
 
   DynamicJsonDocument SensorJDoc(JSON_OBJECT_SIZE(3));
 
-  SensorJDoc["temp"] = temperatureC;
+  SensorJDoc["temp"] = randomNumber;
   SensorJDoc["tds"] = tdsValue;
   SensorJDoc["ph"] = Po;
 
